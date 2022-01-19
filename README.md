@@ -63,13 +63,6 @@ be successful. After that, the traffic sent by clients for which the
 handshake was captured will be decrypted.
 
 
-## Decrypted packets ##
------
-
-When the application is launched, a tap network interface will be 
-created. Every decrypted packet will be encapsulated using Ethernet 
-frames and written to that interface. 
-
 ## Usage ##
 -----
 
