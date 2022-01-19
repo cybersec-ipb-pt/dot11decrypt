@@ -3,22 +3,22 @@
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
  * MA 02110-1301, USA.
- * 
+ *
  * Author: Matias Fontanini <matias.fontanini@gmail.com>
- * 
+ *
  * This small application decrypts WEP/WPA2(AES and TKIP) traffic on
- * the fly and writes the result into a tap interface. 
- * 
+ * the fly and writes the result into a tap interface.
+ *
  */
 
 // libtins
@@ -77,65 +77,16 @@ PacketWriter *packetWriter;
 
 auto DUMP_FILE_NAME = "dump.pcap";
 
-// unique_fd - just a wrapper over a file descriptor which closes
-// the fd in its dtor. non-copyable but movable
-
-class unique_fd {
-public:
-    static constexpr int invalid_fd = -1;
-
-    unique_fd(int fd = invalid_fd)
-            : fd_(fd) {
-
-    }
-
-
-    unique_fd(unique_fd &&rhs)
-            : fd_(invalid_fd) {
-        *this = move(rhs);
-    }
-
-    unique_fd &operator=(unique_fd &&rhs) {
-        if (fd_ != invalid_fd) {
-            ::close(fd_);
-        }
-        fd_ = invalid_fd;
-        swap(fd_, rhs.fd_);
-        return *this;
-    }
-
-    ~unique_fd() {
-        if (fd_ != invalid_fd) {
-            ::close(fd_);
-        }
-    }
-
-    unique_fd(const unique_fd &) = delete;
-
-    unique_fd &operator=(const unique_fd &) = delete;
-
-    int operator*() {
-        return fd_;
-    }
-
-    operator bool() const {
-        return fd_ != invalid_fd;
-    }
-
-private:
-    int fd_;
-};
-
-// packet_buffer - buffers packets, decrypts them and flushes them into 
+// packet_buffer - buffers packets, decrypts them and flushes them into
 // the interface using an auxiliary thread.
 
 class packet_buffer {
 public:
     typedef unique_ptr<PDU> unique_pdu;
 
-    packet_buffer(unique_fd fd, Crypto::WPA2Decrypter wpa2d,
+    packet_buffer(Crypto::WPA2Decrypter wpa2d,
                   Crypto::WEPDecrypter wepd)
-            : fd_(move(fd)), wpa2_decrypter_(move(wpa2d)), wep_decrypter_(move(wepd)) {
+            : wpa2_decrypter_(move(wpa2d)), wep_decrypter_(move(wepd)) {
         // Requires libtins 3.4
 #ifdef TINS_HAVE_WPA2_CALLBACKS
         using namespace std::placeholders;
@@ -218,7 +169,6 @@ private:
         }
     }
 
-    unique_fd fd_;
     thread thread_;
     mutex mtx_;
     condition_variable cond_;
@@ -233,9 +183,9 @@ private:
 
 class traffic_decrypter {
 public:
-    traffic_decrypter(unique_fd fd, Crypto::WPA2Decrypter wpa2d,
+    traffic_decrypter(Crypto::WPA2Decrypter wpa2d,
                       Crypto::WEPDecrypter wepd)
-            : bufferer_(move(fd), move(wpa2d), move(wepd)) {
+            : bufferer_(move(wpa2d), move(wepd)) {
 
     }
 
@@ -260,52 +210,6 @@ private:
 };
 
 
-// if_up - brings the interface up
-
-void if_up(const char *name) {
-    int err, fd = socket(AF_INET, SOCK_DGRAM, 0);
-    struct ifreq ifr;
-    memset(&ifr, 0, sizeof(ifr));
-    strncpy(ifr.ifr_name, name, IFNAMSIZ);
-
-    if ((err = ioctl(fd, SIOCGIFFLAGS, (void *) &ifr)) < 0) {
-        close(fd);
-        cout << strerror(errno) << endl;
-        throw runtime_error("Failed get flags");
-    }
-
-    ifr.ifr_flags |= IFF_UP | IFF_RUNNING;
-
-    if ((err = ioctl(fd, SIOCSIFFLAGS, (void *) &ifr)) < 0) {
-        close(fd);
-        cout << strerror(errno) << endl;
-        throw runtime_error("Failed to bring the interface up");
-    }
-}
-
-// create_tap_dev - creates a tap device
-
-tuple<unique_fd, string> create_tap_dev() {
-    struct ifreq ifr;
-    int err;
-    char clonedev[] = "/dev/net/tun";
-    unique_fd fd = open(clonedev, O_RDWR);
-
-    if (!fd) {
-        throw runtime_error("Failed to open /dev/net/tun");
-    }
-
-    memset(&ifr, 0, sizeof(ifr));
-
-    ifr.ifr_flags = IFF_TAP | IFF_NO_PI;
-
-    if ((err = ioctl(*fd, TUNSETIFF, (void *) &ifr)) < 0) {
-        throw runtime_error("Failed to create tap device");
-    }
-
-    return make_tuple(move(fd), ifr.ifr_name);
-}
-
 // sig_handler - SIGINT handler, so we can release resources appropriately
 void sig_handler(int) {
     if (running) {
@@ -318,11 +222,26 @@ void sig_handler(int) {
 typedef tuple<Crypto::WPA2Decrypter, Crypto::WEPDecrypter> decrypter_tuple;
 
 // Creates a traffic_decrypter and puts it to work
-void decrypt_traffic(unique_fd fd, const string &iface, decrypter_tuple tup) {
-    Sniffer sniffer(iface, 2500, false);
-    // TODO set filter to capture only that AP
+void decrypt_traffic(const string &iface, decrypter_tuple tup, vector<string> ap_filter) {
+
+    string mac_filter = "";
+
+    for (const auto &i: ap_filter) {
+        mac_filter += "wlan addr3 " + i + " or wlan addr4 " + i +
+                      " or wlan addr1 " + i + " or wlan addr2 " + i;
+
+        if (i != ap_filter.back())
+            mac_filter += " or ";
+    }
+
+    SnifferConfiguration config;
+    config.set_promisc_mode(false);
+    config.set_filter(mac_filter);
+    config.set_snap_len(0);
+
+    Sniffer sniffer(iface, config);
+
     traffic_decrypter decrypter(
-            move(fd),
             move(get<0>(tup)),
             move(get<1>(tup))
     );
@@ -361,12 +280,14 @@ decrypter_tuple parse_args(const vector<string> &args) {
 }
 
 void print_usage(const char *arg0) {
-    cout << "Usage: " << arg0 << " <interface> DECRYPTION_DATA [DECRYPTION_DATA] [...]\n\n";
+    cout << "Usage: " << arg0 << " <interface> DECRYPTION_DATA FILTER [...]\n\n";
     cout << "Where DECRYPTION_DATA can be: \n";
     cout << "\twpa:SSID:PSK - to specify WPA2(AES or TKIP) decryption data.\n";
-    cout << "\twep:BSSID:KEY - to specify WEP decryption data.\n\n";
+    cout << "\twep:BSSID:KEY - to specify WEP decryption data.\n";
+    cout << "Where FILTER are the mac addresses of the AP (if not supplyed the whole channel will be captured)\n\n";
     cout << "Examples:\n";
     cout << "\t" << arg0 << " wlan0 wpa:MyAccessPoint:some_password\n";
+    cout << "\t" << arg0 << " wlan0 wpa:MyAccessPoint:some_password 00:0f:24:7a:c7:90 12:0f:24:7a:c7:90\n";
     cout << "\t" << arg0 << " mon0 wep:00:01:02:03:04:05:blahbleehh\n";
     exit(1);
 }
@@ -379,16 +300,17 @@ int main(int argc, char *argv[]) {
 
         packetWriter = new PacketWriter(DUMP_FILE_NAME, DataLinkType<RadioTap>());
 
-        auto decrypters = parse_args(vector<string>(argv + 2, argv + argc));
-        string dev_name;
-        unique_fd fd;
-        tie(fd, dev_name) = create_tap_dev();
-        cout << "Using device: " << dev_name << endl;
-        if_up(dev_name.c_str());
-        cout << "Device is up.\n";
+        auto decrypters = parse_args(vector<string>(argv + 2, argv + 3));
         signal(SIGINT, sig_handler);
         running = true;
-        decrypt_traffic(move(fd), argv[1], move(decrypters));
+        cout << "\n";
+
+        vector<string> ap_filter{};
+        for (int i = 3; i < argc; i++) {
+            ap_filter.insert(ap_filter.end(), argv[i]);
+        }
+
+        decrypt_traffic(argv[1], move(decrypters), ap_filter);
         cout << "Done\n";
     }
     catch (invalid_argument &ex) {
