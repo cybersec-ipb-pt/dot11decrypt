@@ -76,9 +76,10 @@ frames and written to that interface.
 In order to use dot11decrypt, you need to specify the interface in which
 to listen and the decryption options:
 
+(last parameter is the ap mac address)
+
 ```Shell
-./dot11decrypt wlan0 wpa:MyAccessPoint:some_password
-./dot11decrypt mon0 wep:00:01:02:03:04:05:blahbleehh
+./dot11decrypt wlan0 wpa:MyAccessPoint:some_password 00:01:02:03:04:05
 ```
 
 The *wpa:* option allows you to decrypt both WPA and WPA2 encrypted packets.
