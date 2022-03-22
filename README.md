@@ -29,6 +29,18 @@ compiled using support for WPA2 decryption(this is enabled by default),
 and a fairly recent C++ compiler. g++ 4.6 is enough, probably 4.5 works
 as well, but I haven't had the chance to try it.
 
+Summary of the installation of libtins:
+
+```
+apt-get install libpcap-dev libssl-dev cmake
+git clone https://github.com/mfontanini/libtins.git
+mkdir build
+cd build
+cmake ../
+make
+make install
+```
+
 ## Compilation ##
 -----
 
@@ -69,6 +81,14 @@ handshake was captured will be decrypted.
 In order to use dot11decrypt, you need to specify the interface in which
 to listen and the decryption options:
 
+the interface must be in promiscuous mode listening on the channel where the AP is operating on. Example:
+```
+interface=wlan0
+channel=1
+airmon-ng check kill
+airmon-ng start $interface $channel
+```
+
 (last parameter is the ap mac address)
 
 ```Shell
@@ -77,4 +97,4 @@ to listen and the decryption options:
 
 The *wpa:* option allows you to decrypt both WPA and WPA2 encrypted packets.
 
-You can provide as many decryption data tuples as you want.
+The network data will be saved to a local file
